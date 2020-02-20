@@ -4,21 +4,17 @@ Created on Tue Feb 18 14:50:12 2020
 @author: yannis
 """
 
-
 from multiprocessing import Process, Pipe
 import os
 import numpy as np
 import time
 #from pdb import set_trace as bp
 
-#--------------- CHANGE THIS TO THE ENVIRONMENT YOU WISH TO OPTIMIZE
-from franka_pybullet_envs.Franka_scoop_env_v0 import FrankaArmScoopEnv as env
-
-
 
 
 class StochTrajOptimizer:
     def __init__(self,
+                 env,
                  sigma = 0.2,
                  kappa = 1,
                  alpha = 1,
@@ -28,10 +24,11 @@ class StochTrajOptimizer:
                  Iterations = 20,
                  seed = None,
                  render = True,
-                 initial_guess = None):         
+                 initial_guess = None,
+                 **kwargs):        
 
-        self.sigma = sigma  # noise intensity. Suggested values: 0.1 - 1 depending on the environment.
-        self.kappa = kappa # shape transformation scaling constant
+        self.sigma = sigma  # noise intensity
+        self.kappa = kappa # transformation "temperature"
         self.alpha = alpha # learning rate
         self.num_process = Num_processes # number of processes for parallel computation
         self.Traj_per_process = Traj_per_process # number of trajectories simulated by each process
@@ -40,7 +37,9 @@ class StochTrajOptimizer:
         self.M = Num_processes*Traj_per_process # total number of trajectories simulated
         self.seed = seed # seed, in case the environment reset is stochastic
         self.render = render # whether or not to render the execution of each iteration output
-	self.initial_guess = initial_guess # location of .npy file containing initial control sequence guess (can be a sequence obtained by previous run of algorithm)
+        self.initial_guess = initial_guess # location of .npy file containing initial control sequence guess (can be a sequence obtained by previous run of algorithm)
+        self.env = env # environment
+        self.kwargs = kwargs # environment arguments
 
 
     ###############################
@@ -51,10 +50,10 @@ class StochTrajOptimizer:
             # Receive the initialization data
             initialization_data = conn.recv()
             print('Initialization data: ', initialization_data)
-            N,sigma,n_traj,seed = initialization_data # number of trajectories simulated by each process
-            sim = env(renders=False)
+            N,sigma,n_traj,seed,env_fn,kwargs = initialization_data # number of trajectories simulated by each process
+            sim = env_fn(renders=False, **kwargs)
             if seed is not None:
-                sim.seed(seed)
+                sim.seed(seed) # it is assumed that the seed is controlled by a method called "seed" in the environment
             sim.reset()
             while True:
                 command_and_args = conn.recv()   # Get command from main process
@@ -102,9 +101,9 @@ class StochTrajOptimizer:
             # Start the process
             p.start()
             # Send the initial arguments for initialization
-            parent_conn.send([self.N,self.sigma,self.Traj_per_process,self.seed])
+            parent_conn.send([self.N,self.sigma,self.Traj_per_process,self.seed,self.env,  self.kwargs])
 
-        self.world = env(renders=self.render)
+        self.world = self.env(renders=self.render, **self.kwargs)
         self.ctrl_dim = self.world.action_space.shape[0]
         if self.initial_guess is not None:
             u = np.load(self.initial_guess)
@@ -171,7 +170,7 @@ class StochTrajOptimizer:
     
     def replay_traj(self,u):
         if self.seed is not None:
-            self.world.seed(self.seed)
+            self.world.seed(self.seed) # it is assumed that the seed is controlled by a method called "seed" in the environment
         self.world.reset()
         J = 0
         for j in range(self.N):
@@ -179,7 +178,7 @@ class StochTrajOptimizer:
                 c = -c #reverse sign to make it a cost instead of a reward
                 J += c
                 if self.render:
-                    time.sleep(1.0/240.0)
+                    time.sleep(3*1.0/240.0)
         return J        
         
     
@@ -198,11 +197,14 @@ class StochTrajOptimizer:
 
 
 if __name__ == '__main__':
-    sess = StochTrajOptimizer()
+    
+    from franka_pybullet_envs.Franka_scoop_env_v0 import FrankaArmScoopEnv
+    
+    sess = StochTrajOptimizer(env=FrankaArmScoopEnv, sigma = 0.1,initial_guess ='optimal_action_sequences/u_opt.npy')
     uopt,Jopt = sess.optimize()
    
     # save uopt?
-    # np.save('u_opt.npy',uopt) 
+    # np.save('optimal_action_sequences/u_opt.npy',uopt) 
     
     #replay optimal trajectory?
     sess.replay_traj(uopt)
