@@ -42,6 +42,30 @@ class StochTrajOptimizer:
         self.kwargs = kwargs # environment arguments
 
 
+        print('main program process id:', os.getpid())  
+        # Setup and store all processes
+        self.processes = []
+        for i in range(self.num_process):
+            # Create a pair of pipes that can communicate with each other through .send() and .recv()
+            parent_conn, child_conn = Pipe()
+            # Create the sub-process and assign the pipe to it
+            p = Process(target=StochTrajOptimizer.child_process, args=(child_conn, ))
+            self.processes.append([p, parent_conn])
+            # Start the process
+            p.start()
+            # Send the initial arguments for initialization
+            parent_conn.send([self.N,self.sigma,self.Traj_per_process,self.seed,self.env,  self.kwargs])
+
+        self.world = self.env(renders=self.render, **self.kwargs)
+        self.ctrl_dim = self.world.action_space.shape[0]
+        
+        
+        
+    def __del__(self):
+        self.world.__del__()
+        
+        
+
     ###############################
     ####### Child process  ########
     ###############################
@@ -53,7 +77,7 @@ class StochTrajOptimizer:
             N,sigma,n_traj,seed,env_fn,kwargs = initialization_data # number of trajectories simulated by each process
             sim = env_fn(renders=False, **kwargs)
             if seed is not None:
-                sim.seed(seed) # it is assumed that the seed is controlled by a method called "seed" in the environment
+                sim.seed(seed)
             sim.reset()
             while True:
                 command_and_args = conn.recv()   # Get command from main process
@@ -89,22 +113,7 @@ class StochTrajOptimizer:
     ######## Main process  ########
     ###############################
     def optimize(self):
-        print('main program process id:', os.getpid())  
-        # Setup and store all processes
-        processes = []
-        for i in range(self.num_process):
-            # Create a pair of pipes that can communicate with each other through .send() and .recv()
-            parent_conn, child_conn = Pipe()
-            # Create the sub-process and assign the pipe to it
-            p = Process(target=StochTrajOptimizer.child_process, args=(child_conn, ))
-            processes.append([p, parent_conn])
-            # Start the process
-            p.start()
-            # Send the initial arguments for initialization
-            parent_conn.send([self.N,self.sigma,self.Traj_per_process,self.seed,self.env,  self.kwargs])
-
-        self.world = self.env(renders=self.render, **self.kwargs)
-        self.ctrl_dim = self.world.action_space.shape[0]
+ 
         if self.initial_guess is not None:
             u = np.load(self.initial_guess)
             print('Initialized control with existing control sequence')
@@ -122,17 +131,18 @@ class StochTrajOptimizer:
             E = [];
             for i in range(self.num_process):
                 # Get the control signal for this trajectory
-                processes[i][1].send(["control", u])    # Ask process i to simulate the control signals u
+                self.processes[i][1].send(["control", u])    # Ask process i to simulate the control signals u
  
             for i in range(self.num_process): 
-                processes[i][1].send(["get_J"])     # Get the trajectory costs for the trajectories that process i was asked to simulate
-                Js_i, E_i = processes[i][1].recv()
+                self.processes[i][1].send(["get_J"])     # Get the trajectory costs for the trajectories that process i was asked to simulate
+                Js_i, E_i = self.processes[i][1].recv()
                 J.append(Js_i)
                 E.append(E_i)
                 #print('got J,E,')
 
             J = np.concatenate(J)
             E = np.concatenate(E,axis=2)
+            Jmean = np.mean(J)
             J = J - min(J)
             S = np.exp(-self.kappa*J)
             norm = np.sum(S)
@@ -147,17 +157,17 @@ class StochTrajOptimizer:
             #print('executing control...')
             Jcur = self.replay_traj(u) #execute trajectory to evaluate control and get current cost
         
-            if Jcur < self.Jopt:   # compare current cost with optimal
+            if Jcur <= self.Jopt:   # compare current cost with optimal
                 self.uopt = u.copy()
                 #Xopt[:,:] = Xnew[:,:]
-                self.Jopt = Jcur.copy()
-            print("Iteration %.0f took %.2f seconds, Current reward: %.2f, Optimal reward %.2f" % (iter_id+1, (end_time - start_time), -Jcur, -self.Jopt))
+                self.Jopt = Jcur
+            print("Iteration %.0f took %.2f seconds (mean sampled reward: %.2f). Current reward after update: %.2f, Optimal reward %.2f" % (iter_id+1, (end_time - start_time), -Jmean, -Jcur, -self.Jopt))
             start_time = time.time()
             
         # Wrap up
         for i in range(self.num_process):
-            Js_i = processes[i][1].send(["stop"])
-            processes[i][0].join()
+            Js_i = self.processes[i][1].send(["stop"])
+            self.processes[i][0].join()
             
         print('Optimization completed.')
         return self.uopt, -self.Jopt
@@ -170,7 +180,7 @@ class StochTrajOptimizer:
     
     def replay_traj(self,u):
         if self.seed is not None:
-            self.world.seed(self.seed) # it is assumed that the seed is controlled by a method called "seed" in the environment
+            self.world.seed(self.seed)
         self.world.reset()
         J = 0
         for j in range(self.N):
@@ -178,7 +188,7 @@ class StochTrajOptimizer:
                 c = -c #reverse sign to make it a cost instead of a reward
                 J += c
                 if self.render:
-                    time.sleep(3*1.0/240.0)
+                    time.sleep(1.0/240.0)
         return J        
         
     
@@ -191,6 +201,10 @@ class StochTrajOptimizer:
     
     
     
+    
+    
+    
+
     
     
     
