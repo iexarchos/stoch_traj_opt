@@ -56,7 +56,7 @@ class StochTrajOptimizer:
             # Send the initial arguments for initialization
             parent_conn.send([self.N,self.sigma,self.Traj_per_process,self.seed,self.env,  self.kwargs])
 
-        self.world = self.env(renders=self.render, **self.kwargs)
+        self.world = self.env(renders=self.render, **self.kwargs) # it is assumed that rendering is controlled by "renders" argument
         self.ctrl_dim = self.world.action_space.shape[0]
         
         
@@ -75,9 +75,9 @@ class StochTrajOptimizer:
             initialization_data = conn.recv()
             print('Initialization data: ', initialization_data)
             N,sigma,n_traj,seed,env_fn,kwargs = initialization_data # number of trajectories simulated by each process
-            sim = env_fn(renders=False, **kwargs)
+            sim = env_fn(renders=False, **kwargs) # it is assumed that rendering is controlled by "renders" argument
             if seed is not None:
-                sim.seed(seed)
+                sim.seed(seed) # it is assumed that the seed is controlled by a method called "seed" in the environment
             sim.reset()
             while True:
                 command_and_args = conn.recv()   # Get command from main process
@@ -142,7 +142,7 @@ class StochTrajOptimizer:
 
             J = np.concatenate(J)
             E = np.concatenate(E,axis=2)
-            Jmean = np.mean(J)
+            Jmean = np.mean(J) # This is the mean of the rewards from the sampled trajectories
             J = J - min(J)
             S = np.exp(-self.kappa*J)
             norm = np.sum(S)
@@ -180,7 +180,7 @@ class StochTrajOptimizer:
     
     def replay_traj(self,u):
         if self.seed is not None:
-            self.world.seed(self.seed)
+            self.world.seed(self.seed) # it is assumed that the seed is controlled by a method called "seed" in the environment
         self.world.reset()
         J = 0
         for j in range(self.N):
